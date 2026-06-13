@@ -16,13 +16,8 @@ pub fn EnumFromTypeSlice(types: []const type) type {
             .value = i,
         };
     }
-
-    return @Type(.{.@"enum" = .{
-        .decls = &.{},
-        .tag_type = u32,
-        .fields = &texture_fields,
-        .is_exhaustive = false,
-    }});
+    
+    return @Enum(&.{}, u32, &texture_fields, false);
 }
 
 pub fn EnumFromTypeSliceTerminated(comptime types: []const type, comptime last_field: []const u8) type {
@@ -37,10 +32,5 @@ pub fn EnumFromTypeSliceTerminated(comptime types: []const type, comptime last_f
 
     texture_fields[types.len] = .{.name = last_field, .value = types.len};
 
-    return @Type(.{.@"enum" = .{
-        .decls = &.{},
-        .tag_type = u32,
-        .fields = &texture_fields,
-        .is_exhaustive = false,
-    }});
+    return @Enum(&.{}, u32, &texture_fields, false);
 }

@@ -166,6 +166,9 @@ const DataBaseUnmanaged = struct {
         return table.entries - 1;
     }
 
+    /// Appends an entry into the specified table and returns 
+    /// the index it was appended to. 
+    ///
     /// values - all the components, asserts that 
     /// values.len == amount of components the table has
     pub fn appendEntry(
@@ -185,7 +188,6 @@ const DataBaseUnmanaged = struct {
             // first get the data id from component data
             // this also ensures our new component fits
             const component_data_id = try component_table.addOne(gpa);
-            std.debug.print("component_data_id = {}\n", .{component_data_id});
 
             // copy the passed data into the component table's data
             @memcpy(
@@ -332,68 +334,7 @@ pub const Entity = struct {
 };
 
 pub const System = struct {
-    pub const SystemFn = *const fn(*API) API.ExecutionError!void;
 
-    pub const API = struct {
-        pub const ExecutionError = error {
-            GenericError,
-            AllocationFailed,
-            WorldInteractionFailed,
-        };
-        pub const Config = struct {
-            operates_on: []const usize,
-
-            update_fn: ?SystemFn = null,
-        };
-
-        bytes: []u8,
-        component_id: usize,
-
-        pub inline fn asTyped(self: *API, T: type) *T {
-            return @alignCast(std.mem.bytesAsValue(T, self.bytes));
-        }
-    };
-
-    pub const SysIR = struct {
-        config: *const API.Config,
-        tickAllFn: SystemFn,
-    };
-
-    ecs: *ECS,
-    fn_queue: std.ArrayListUnmanaged(SysIR) = .empty,
-
-    pub fn registerCtx(self: *System, ctx: anytype) !void {
-        comptime if(!@hasDecl(ctx, "system_config")) 
-            @compileError("ctx must have a public declaration with name system_config of type ecs.System.API.Config");
-
-        const sys: SysIR = .{
-            .config = &ctx.system_config,
-            
-            .tickAllFn = ctx.system_config.update_fn orelse ctx.tick,
-        };
-
-        return self.fn_queue.append(self.ecs.gpa, sys);
-    } 
-
-    pub fn tick(self: *System) !void {
-        // for every function
-        for(self.fn_queue.items) |ctx| {
-            // for every component it operates on
-            for(ctx.config.operates_on) |component_id| {
-                // for every value
-                var it = self.ecs.db.components.get(component_id).interator();
-                while(it.next()) |component| {
-                    var api: API = .{
-                        .component_id = component_id,
-                        .bytes = component,
-                    };
-
-                    // TODO: add more query options for systems
-                    try ctx.tickAllFn(&api);
-                }
-            }
-        }
-    }
 };
 
 pub const empty: ECS = .{

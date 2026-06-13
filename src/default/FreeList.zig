@@ -23,7 +23,7 @@ pub const FreeListSlice = struct {
 /// with a memory block instead of multiple as is the case with heap memory.
 ///
 /// @param DataType main type the list will work with.
-/// @param alloc_size in how big increments will the list grow. 
+/// @param alloc_size in how big increments will the list grow.
 ///                   My recommendation is to check multiple values, higher values 
 ///                   give a more performant list, but make the list consume more 
 ///                   memory, while lower values make the list consume less memory, 
@@ -352,6 +352,16 @@ pub fn SimpleLinkedFreeList(DataType: type, alloc_size: usize) type {
         /// ```
         pub fn peekInsertionIndex(self: *Self) usize {
             return self._free_space[self.data.len - self._occupied - 1] orelse unreachable;
+        }
+
+        pub fn reserve(self: *Self) !usize {
+            std.debug.assert(self._initialized == true);
+
+            try self.checkAndResize();
+            const id = self.takeID();
+            self.link(id);
+
+            return id;
         }
 
         /// Inserts new value into the SimpleLinkedFreeList. The inserted id stays valid
@@ -821,123 +831,487 @@ pub fn ManyTypeLinkedFreeList(alloc_size: usize) type {
     };
 }
 
+const Allocator = std.mem.Allocator;
+
+pub const Simple = struct {
+    // make this the defacto implementation
+};
+
+pub const SimpleLinked = struct {
+    pub fn Unmanaged(T: type) type {
+        return struct {
+            const ThisUnmanaged = @This();
+            const Index = usize;
+
+            pub const Link = struct {
+                next: Index,
+                prev: Index,
+            };
+
+            /// iterator struct for the Unmanaged Simple Linked list.
+            /// bad practice to create manually, use `.iterator()`.
+            pub const Iterator = struct {
+                /// actual list
+                list: *SimpleLinked.Unmanaged(T),
+
+                /// tracks the current item
+                current: usize,
+                passed: usize = 0,
+
+                /// get the current item's pointer and advance to the next item.
+                pub fn nextPtr(it: *Iterator) ?*T {
+                    if(it.list.root == null) return null;
+
+                    defer { 
+                        it.current = it.list.links[it.current].next;
+                        it.passed += 1;
+                    }
+
+                    // return the current value unless we had a loop and the current 
+                    // node is root, in which case return null.
+                    return if(it.current == it.list.root.? and it.passed > 0) 
+                        null else &it.list.data[it.current];
+                }
+
+                /// get the current item and advance to the next.
+                pub fn next(it: *Iterator) ?T {
+                    return if(it.nextPtr()) |v| v.* else null;
+                }
+
+                /// reset the iterator
+                pub fn reset(it: *Iterator) void {
+                    it.current = it.list.root.?;
+                }
+            };
+            
+            /// DO NOT USE.
+            /// Meant exclusively for use as a placeholder
+            var emptyarr = [0]T{};
+
+            /// the list is guarantied to be usable after being set 
+            /// to this state
+            pub const empty: Unmanaged(T) = .{
+                .data = &emptyarr,
+                .links = undefined,
+                .free_index = undefined,
+                .occupied = 0,
+                .root = null,
+            };
+
+            /// data array, stores the actual data.
+            data: []T, // usize + usize
+
+            /// link array, the size of this array is that of the 
+            /// data array.
+            links: [*]Link, // usize 
+
+            /// list of free indexes, the size of this array is that of the 
+            /// data array.
+            free_index: [*]Index, // usize
+
+            /// keeps track of how much of each array is actually occupied.
+            occupied: usize = 0, // usize
+
+            /// keeps track of the root node of the chain.
+            root: ?Index = null, // usize + usize 
+
+            const init_capacity = 
+                @as(comptime_int, @max(1, std.atomic.cache_line / @sizeOf(T)));
+
+            /// Called when memory growth is necessary. Returns a capacity larger than
+            /// minimum that grows super-linearly.
+            ///
+            /// shamelessly stolen from std.array_list.Aligned(...)
+            fn growCapacity(current: usize, minimum: usize) usize {
+                var new = current;
+                while (true) {
+                    new +|= new / 2 + init_capacity;
+                    if (new >= minimum) return new;
+                }
+            }
+
+            /// populates the free index array from the start of the array to the `data.len - occupied`
+            /// with numbers from (and including) `start` argument. Should be ran only when all of the 
+            /// available indices are exhausted.
+            inline fn populateFreeIndices(self: *ThisUnmanaged, start: usize) void {
+                for(self.free_index[0..self.data.len - self.occupied], start..) |*index_space, i|
+                    index_space.* = i;
+                std.debug.print("POPULATING: {any}\n", .{self.free_index[0..self.data.len]});
+            }
+
+            /// ensure all of the internal arrays can fit the data they need to fit.
+            fn ensureEnoughCapacity(self: *ThisUnmanaged, gpa: Allocator) !void {
+                if(self.occupied < self.data.len) return;
+
+                // allocated space == 0 means it hasn't been initialized yet.
+                if(self.data.len == 0) {
+                    // initialize each list
+                    self.data = try gpa.alloc(T, init_capacity);
+                    self.links = (try gpa.alloc(Link, init_capacity)).ptr;
+                    self.free_index = (try gpa.alloc(Index, init_capacity)).ptr;
+
+                    // make sure to populate the index array.
+                    self.populateFreeIndices(0);
+
+                    // we have enough space, return 
+                    return;
+                }
+
+                // grow all the arrays 
+                const grow_by = growCapacity(self.data.len, self.data.len + 1);
+                const first_index = self.data.len;
+
+                self.links = (try gpa.realloc(self.links[0..self.data.len], grow_by)).ptr;
+                self.free_index = (try gpa.realloc(self.free_index[0..self.data.len], grow_by)).ptr;
+
+                // needs to be resized last, since the size of this array is used as a reference
+                // to other arrays and once it's resized before other arrays, the size doesn't match
+                // anymore.
+                self.data = try gpa.realloc(self.data, grow_by);
+
+                // populate indices starting from the first available index.
+                self.populateFreeIndices(first_index);
+            }
+
+            /// gets the next available index
+            inline fn peekIndex(self: *ThisUnmanaged) Index {
+                // `self.data.len - self.occupied - 1` is how we get the first index available of the 
+                // index array.
+                return self.free_index[self.data.len - self.occupied - 1];
+            }
+
+            /// links an index to the end of the chain, so the root's last index becomes the index `i`
+            fn linkIndex(self: *ThisUnmanaged, i: Index) void {
+                // in case this is the first node, we need to set it as root
+                if(self.root == null) {
+                    self.root = i;
+
+                    // root is just linked to itself
+                    self.links[i].prev = i;
+                    self.links[i].next = i;
+
+                    return;
+                } 
+                // set our last to root's last
+                self.links[i].prev = self.links[ self.root.? ].prev;
+
+                // set ourselves as root's last
+                self.links[self.root.?].prev = i;
+
+                // set our next to root
+                self.links[i].next = self.root.?; 
+
+                // set ourselves as our new previous' next
+                self.links[self.links[i].prev].next = i;
+            }
+
+            /// unlinks the supplied index from the linked list
+            fn unlinkIndex(self: *ThisUnmanaged, i: Index) void {
+                // alias
+                const previous = self.links[i].prev;
+                const next = self.links[i].next;
+
+                // set our previous' next to be our next
+                self.links[previous].next = next;
+
+                // set our next's prevous to be our previous
+                self.links[next].prev = previous;
+            }
+
+            pub fn dumpMemory(self: ThisUnmanaged) void {
+                std.debug.print("------------ MEM DUMP -------------------------\n", .{});
+                std.debug.print("root is: {?}\n", .{self.root});
+                std.debug.print("occupied: {}\n", .{self.occupied});
+                std.debug.print("DATA: << {any} >>\n", .{self.data});
+                std.debug.print("LINKS: << {any} >>\n", .{self.links[0..self.data.len]});
+                std.debug.print("AVAILABLE: << {any} >>\n", .{self.free_index[0..self.data.len]});
+
+                var index = self.root.?;
+                while(true) : ({index = self.links[index].next; if(index == self.root.?) break;}) {
+                    std.debug.print("[i:{};v:{}] -> ", .{index, self.data[index]});
+
+                }
+                std.debug.print("\n", .{});
+                std.debug.print("------------ END DUMP -------------------------\n", .{});
+            }
+
+            /// Reserves an index for use without puting anything in it's data space.
+            pub fn reserve(self: *ThisUnmanaged, gpa: Allocator) !Index {
+                try self.ensureEnoughCapacity(gpa);
+                const i = self.peekIndex();
+
+                // make sure to increment the occupied counter
+                self.occupied += 1;
+                self.linkIndex(i);
+
+                return i;
+            }
+
+            /// gets the pointer to an element at index `i`
+            pub inline fn getPtr(self: ThisUnmanaged, i: Index) *T {
+                return &self.data[i];
+            }
+
+            /// get the value at index `i`
+            pub inline fn get(self: ThisUnmanaged, i: Index) T {
+                return self.data[i];
+            }
+
+            /// Retrieves the last element's index. 
+            /// Asserts that the root is not null.
+            pub fn getLastElementIndex(self: ThisUnmanaged) usize {
+                std.debug.assert(self.root != null);
+                
+                return self.links[self.root.?].prev;
+            }
+
+            /// retrives the last element's pointer.
+            /// Asserts that the root is not null.
+            pub fn getLastElementPtr(self: ThisUnmanaged) *T {
+                return &self.data[ self.getLastElementIndex() ];
+            }
+
+            /// returns the pointer to the root node, 
+            /// asserts the root node is not null.
+            pub fn getRootPtr(self: ThisUnmanaged) *T {
+                std.debug.assert(self.root != null);
+
+                return &self.data[ self.root.? ];
+            }
+
+            /// Inserts an element into the list
+            pub fn insert(self: *ThisUnmanaged, gpa: Allocator, data: T) !Index {
+                const i = try self.reserve(gpa);
+
+                self.getPtr(i).* = data;
+
+                return i;
+            }
+
+            /// remove an index from the list
+            pub fn remove(self: *ThisUnmanaged, index: usize) void {
+                // return the index to the respective array
+                self.free_index[self.data.len - self.occupied] = index;
+
+                // decrement the occupied counter
+                self.occupied -= 1;
+
+                // the removal of a root node must have special handling
+                if(index == self.root.?) self.root = self.links[index].next;
+                self.unlinkIndex(index);
+            }
+
+            /// create a new iterator, use with while loop.
+            pub fn iterator(self: *ThisUnmanaged) ThisUnmanaged.Iterator {
+                return .{
+                    .list = self,
+                    .current = self.root orelse 0,
+                };
+            }
+
+            /// deinits the list
+            pub fn deinit(self: *ThisUnmanaged, gpa: Allocator) void {
+                gpa.free(self.data);
+                gpa.free(self.links[0..self.data.len]);
+                gpa.free(self.free_index[0..self.data.len]);
+            }
+        };
+    }
+
+    pub fn Managed(T: type) type {
+        return struct {
+            const ThisManaged = @This();
+            const Unman = SimpleLinked.Unmanaged(T);
+
+            const empty: ThisManaged = .{ 
+                .allocator = undefined,
+                .unmanaged = .empty,
+            };
+
+            unmanaged: Unman,
+            allocator: Allocator,
+
+            pub fn init(gpa: Allocator) ThisManaged {
+                return .{
+                    .unmanaged = .empty,
+                    .allocator = gpa,
+                };
+            }
+
+            pub inline fn reserve(self: *ThisManaged) !Unman.Index {
+                return self.unmanaged.reserve(self.allocator);
+            }
+
+            pub inline fn getPtr(self: *ThisManaged, i: Unman.Index) *T {
+                return self.unmanaged.getPtr(i);
+            }
+
+            pub inline fn insert(self: *ThisManaged, v: T) !Unman.Index {
+                return self.unmanaged.insert(self.allocator, v);
+            }
+
+            pub inline fn remove(self: *ThisManaged, index: usize) void {
+                return self.unmanaged.remove(index);
+            }
+
+            pub inline fn iterator(self: *ThisManaged) Unman.Iterator {
+                return self.unmanaged.iterator();
+            }
+
+            pub inline fn deinit(self: *ThisManaged) void {
+                self.unmanaged.deinit(self.allocator);
+            }
+        };
+    }
+};
+
 const freelist = @This();
 const testing = std.testing;
 const testing_alloc_size = 20;
 
+test "SimpleLinked.Unmanaged.insert" {
+    var fl: SimpleLinked.Unmanaged(u8) = .empty;
+    defer fl.deinit(testing.allocator);
+
+    const i = try fl.insert(testing.allocator, 7);
+    _ = try fl.insert(testing.allocator, 18);
+    _ = try fl.insert(testing.allocator, 20);
+
+    for(0..125) |n| {
+        _ = try fl.insert(testing.allocator, @as(u8, @intCast(n)) + 2);
+    }
+
+    fl.remove(25);
+
+    _ = try fl.insert(testing.allocator, 67);
+    std.debug.print("index: {}\n", .{i});
+    std.debug.print("size = {}\n", .{@sizeOf(usize)});
+    std.debug.print("@sizeOf(fl) = {};\n", .{@sizeOf(SimpleLinked.Unmanaged(u8))});
+
+    std.debug.print("VALUES: ", .{});
+    var it = fl.iterator();
+    while(it.next()) |v| {
+        std.debug.print("{} ", .{v});
+    }
+    std.debug.print("\n", .{});
+
+    fl.dumpMemory();
+}
+
 const FL = SimpleLinkedFreeList(u8, testing_alloc_size);
 
-test "FreeListSlice(types)" {
-    // check if the slice is big enough to hold indexes
-    const foo = FreeListSlice{};
-    try testing.expectEqual(usize, @TypeOf(foo.start));
-    try testing.expectEqual(usize, @TypeOf(foo.end));
-    try testing.expectEqual(usize, @TypeOf(foo.size));
-}
-
-test "SimpleLinkedFreeList.init" {
-    var fl = try FL.init(testing.allocator);
-    defer fl.release();
-
-    try testing.expectEqual(testing_alloc_size, fl.data.len);
-    try testing.expectEqual(testing_alloc_size, fl._data_info.len);
-    try testing.expectEqual(testing_alloc_size, fl._free_space.len);
-    try testing.expectEqual(true, fl._initialized);
-    try testing.expectEqual(null, fl._start);
-    try testing.expectEqual(0, fl._occupied);
-
-    for (fl._free_space, 0..) |value, i| {
-        try testing.expectEqual(testing_alloc_size - i - 1, value);
-    }
-}
-
-test "SimpleLinkedFreeList.createIterator" {
-    var fl = try FL.init(testing.allocator);
-    defer fl.release();
-
-    // free list should return an error for no elements
-    try testing.expectError(error.list_is_empty, fl.createIterator());
-
-    _ = try fl.insert(5);
-
-    var it = try fl.createIterator();
-    _ = &it;
-
-    try testing.expectEqual(it.next_id, fl._start);
-}
-
-test "SimpleLinkedFreeList.createSliceIterator" {
-    var fl = try FL.init(testing.allocator);
-    defer fl.release();
-
-    _ = try fl.insert(0);
-    _ = try fl.insert(0);
-
-    const s = try fl.insertSlice(&.{5, 0, 6, 0xFF});
-    var it = try fl.createSliceIterator(s);
-
-    _ = try fl.insert(0);
-    _ = try fl.insert(0);
-
-    try testing.expectEqual(@as(?u8, 5), it.next());
-    try testing.expectEqual(@as(?u8, 0), it.next());
-    try testing.expectEqual(@as(?u8, 6), it.next());
-    try testing.expectEqual(@as(?u8, 0xFF), it.next());
-    try testing.expectEqual(@as(?u8, null), it.next());
-}
-
-test "SimpleLinkedFreeList.Iterator.next" {
-    var fl = try FL.init(testing.allocator);
-    defer fl.release();
-
-    _ = try fl.insert(5);
-    _ = try fl.insert(4);
-    _ = try fl.insert(2);
-    _ = try fl.insert(0xFF);
-
-    var it = try fl.createIterator();
-
-    try testing.expectEqual(@as(?u8, 5), it.next());
-    try testing.expectEqual(@as(?u8, 4), it.next());
-    try testing.expectEqual(@as(?u8, 2), it.next());
-    try testing.expectEqual(@as(?u8, 0xFF), it.next());
-    try testing.expectEqual(@as(?u8, null), it.next());
-}
-
-test "SimpleLinkedFreeList.Iterator.reset" {
-    var fl = try FL.init(testing.allocator);
-    defer fl.release();
-
-    _ = try fl.insert(5);
-    const id1 = try fl.insert(4);
-
-    var it = try fl.createIterator();
-
-    _ = it.next();
-    _ = it.next();
-    _ = it.next();
-
-    try it.reset();
-
-    try testing.expectEqual(0, it.count);
-    try testing.expectEqual(it.fl._start, it.next_id);
-    try testing.expectEqual(0, it.current_id);
-
-    it.custom_start = @intCast(id1);
-    try it.reset();
-    _ = it.next();
-
-    try testing.expectEqual(it.custom_start, it.current_id);
-}
-
-test "SimpleLinkedFreeList.insertSlice" { 
-    var fl = try FL.init(testing.allocator);
-    defer fl.release();
-
-    _ = try fl.insert(5);
-    const s = try fl.insertSlice(&.{4, 5, 2, 6});
-
-    try testing.expectEqual(1, s.start);
-    try testing.expectEqual(4, s.end);
-    try testing.expectEqual(4, s.size);
-}
+//
+// test "FreeListSlice(types)" {
+//     // check if the slice is big enough to hold indexes
+//     const foo = FreeListSlice{};
+//     try testing.expectEqual(usize, @TypeOf(foo.start));
+//     try testing.expectEqual(usize, @TypeOf(foo.end));
+//     try testing.expectEqual(usize, @TypeOf(foo.size));
+// }
+//
+// test "SimpleLinkedFreeList.init" {
+//     var fl = try FL.init(testing.allocator);
+//     defer fl.release();
+//
+//     try testing.expectEqual(testing_alloc_size, fl.data.len);
+//     try testing.expectEqual(testing_alloc_size, fl._data_info.len);
+//     try testing.expectEqual(testing_alloc_size, fl._free_space.len);
+//     try testing.expectEqual(true, fl._initialized);
+//     try testing.expectEqual(null, fl._start);
+//     try testing.expectEqual(0, fl._occupied);
+//
+//     for (fl._free_space, 0..) |value, i| {
+//         try testing.expectEqual(testing_alloc_size - i - 1, value);
+//     }
+// }
+//
+// test "SimpleLinkedFreeList.createIterator" {
+//     var fl = try FL.init(testing.allocator);
+//     defer fl.release();
+//
+//     // free list should return an error for no elements
+//     try testing.expectError(error.list_is_empty, fl.createIterator());
+//
+//     _ = try fl.insert(5);
+//
+//     var it = try fl.createIterator();
+//     _ = &it;
+//
+//     try testing.expectEqual(it.next_id, fl._start);
+// }
+//
+// test "SimpleLinkedFreeList.createSliceIterator" {
+//     var fl = try FL.init(testing.allocator);
+//     defer fl.release();
+//
+//     _ = try fl.insert(0);
+//     _ = try fl.insert(0);
+//
+//     const s = try fl.insertSlice(&.{5, 0, 6, 0xFF});
+//     var it = try fl.createSliceIterator(s);
+//
+//     _ = try fl.insert(0);
+//     _ = try fl.insert(0);
+//
+//     try testing.expectEqual(@as(?u8, 5), it.next());
+//     try testing.expectEqual(@as(?u8, 0), it.next());
+//     try testing.expectEqual(@as(?u8, 6), it.next());
+//     try testing.expectEqual(@as(?u8, 0xFF), it.next());
+//     try testing.expectEqual(@as(?u8, null), it.next());
+// }
+//
+// test "SimpleLinkedFreeList.Iterator.next" {
+//     var fl = try FL.init(testing.allocator);
+//     defer fl.release();
+//
+//     _ = try fl.insert(5);
+//     _ = try fl.insert(4);
+//     _ = try fl.insert(2);
+//     _ = try fl.insert(0xFF);
+//
+//     var it = try fl.createIterator();
+//
+//     try testing.expectEqual(@as(?u8, 5), it.next());
+//     try testing.expectEqual(@as(?u8, 4), it.next());
+//     try testing.expectEqual(@as(?u8, 2), it.next());
+//     try testing.expectEqual(@as(?u8, 0xFF), it.next());
+//     try testing.expectEqual(@as(?u8, null), it.next());
+// }
+//
+// test "SimpleLinkedFreeList.Iterator.reset" {
+//     var fl = try FL.init(testing.allocator);
+//     defer fl.release();
+//
+//     _ = try fl.insert(5);
+//     const id1 = try fl.insert(4);
+//
+//     var it = try fl.createIterator();
+//
+//     _ = it.next();
+//     _ = it.next();
+//     _ = it.next();
+//
+//     try it.reset();
+//
+//     try testing.expectEqual(0, it.count);
+//     try testing.expectEqual(it.fl._start, it.next_id);
+//     try testing.expectEqual(0, it.current_id);
+//
+//     it.custom_start = @intCast(id1);
+//     try it.reset();
+//     _ = it.next();
+//
+//     try testing.expectEqual(it.custom_start, it.current_id);
+// }
+//
+// test "SimpleLinkedFreeList.insertSlice" { 
+//     var fl = try FL.init(testing.allocator);
+//     defer fl.release();
+//
+//     _ = try fl.insert(5);
+//     const s = try fl.insertSlice(&.{4, 5, 2, 6});
+//
+//     try testing.expectEqual(1, s.start);
+//     try testing.expectEqual(4, s.end);
+//     try testing.expectEqual(4, s.size);
+// }

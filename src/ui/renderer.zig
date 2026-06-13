@@ -53,7 +53,8 @@ pub const draw = struct {
             root.decl_ptr.specific.element.data.label.text 
         ));
     }
-};
+
+}; 
 
 pub fn drawElement(offset: Vec2, data: *FreeList, elem: types.Elements, root: *ir.Element) void {
     _ = data;
@@ -68,7 +69,7 @@ pub fn drawTree(offset: Vec2, data: *FreeList, tree: *ir.Element) void {
         .element => |*elem| {
             drawElement(offset, data, elem.which, tree);
         },
-        .container => |_| {
+        .container => {
             const cont_data = &data.getPtr(tree.data_id).container;
 
             draw.container(
@@ -96,7 +97,7 @@ pub fn drawTree(offset: Vec2, data: *FreeList, tree: *ir.Element) void {
 
             raylib.endScissorMode();
         },
-        .switch_container => |_| {
+        .switch_container => {
             const cont_data = &data.getPtr(tree.data_id).container;
 
             draw.container(

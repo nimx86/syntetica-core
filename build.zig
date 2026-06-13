@@ -62,7 +62,27 @@ pub fn build(b: *std.Build) void {
     _ = syntetica_core.addModule("ui");
     _ = syntetica_core.addModule("ecs");
     _ = syntetica_core.addModule("fs");
+    _ = syntetica_core.addModule("graphics");
 
+    const vulkan_headers = b.dependency("vulkan_headers", .{});
+    const vulkan = b.dependency("vulkan", .{
+        .registry = vulkan_headers.path("registry/vk.xml"),
+    }).module("vulkan-zig");
+    syntetica_core.core.addImport("vulkan", vulkan);
+
+    const zglfw = b.dependency("zglfw", .{
+        .target = target,
+        .optimize = optimize,
+        .import_vulkan = true,
+    });
+
+    const zglfw_mod = zglfw.module("root");
+    zglfw_mod.addImport("vulkan", vulkan);
+    syntetica_core.core.addImport("zglfw", zglfw_mod);
+
+    if (target.result.os.tag != .emscripten) {
+        syntetica_core.core.linkLibrary(zglfw.artifact("glfw"));
+    }
 
     // RAYLIB /////////
     const raylib_dep = b.dependency("raylib_zig", .{
@@ -80,47 +100,45 @@ pub fn build(b: *std.Build) void {
 
     syntetica_core.confirm();
 
-    // // EXAMPLES ///////////////////////////
-    // const examples = [_][]const u8{
-    //     "full",
-    //     "actorstyle",
-    //     "dev",
-    // };
-    // for (examples) |example_name| {
-    //     const example_path = b.fmt("examples/{s}", .{example_name}); 
-    //     const example = b.addExecutable(.{
-    //         .name = example_name,
-    //         .root_module = b.createModule(.{
-    //             .root_source_file = b.path(b.fmt("{s}/main.zig", .{example_path})),
-    //             .target = target,
-    //             .optimize = optimize,
-    //         }),
-    //     });
-    //     example.root_module.addImport("syntetica", syntetica_core.core);
-    //
-    //     const inst_art = b.addInstallArtifact(example, .{.dest_dir = .{ .override = .bin}});
-    //     const inst_dir = b.addInstallDirectory(.{ 
-    //         .source_dir = b.path(b.fmt("{s}/res", .{example_path})), 
-    //         .install_dir = .bin, 
-    //         .install_subdir = "res" 
-    //     });
-    //
-    //     const default_path = b.fmt("zig-out/bin/{s}", .{example_name});
-    //
-    //     const run_example = b.addSystemCommand(&.{
-    //         b.fmt("{s}/../{s}", .{
-    //             b.install_path, 
-    //             example.installed_path orelse default_path
-    //         })
-    //     });
-    //     run_example.step.dependOn(&inst_art.step);
-    //     run_example.step.dependOn(&inst_dir.step);
-    //
-    //     const example_step = b.step(
-    //         b.fmt("runeg_{s}", .{example_name}), 
-    //         b.fmt("Run the {s} example", .{example_name})
-    //     );
-    //     example_step.dependOn(&example.step);
-    //     example_step.dependOn(&run_example.step);
-    // }
+    // EXAMPLES ///////////////////////////
+    const examples = [_][]const u8{
+        "graphics"
+    };
+    for (examples) |example_name| {
+        const example_path = b.fmt("examples/{s}", .{example_name}); 
+        const example = b.addExecutable(.{
+            .name = example_name,
+            .root_module = b.createModule(.{
+                .root_source_file = b.path(b.fmt("{s}/main.zig", .{example_path})),
+                .target = target,
+                .optimize = optimize,
+            }),
+        });
+        example.root_module.addImport("syntetica", syntetica_core.core);
+
+        const inst_art = b.addInstallArtifact(example, .{.dest_dir = .{ .override = .bin}});
+        const inst_dir = b.addInstallDirectory(.{ 
+            .source_dir = b.path(b.fmt("{s}/res", .{example_path})), 
+            .install_dir = .bin, 
+            .install_subdir = "res" 
+        });
+
+        const default_path = b.fmt("zig-out/bin/{s}", .{example_name});
+
+        const run_example = b.addSystemCommand(&.{
+            b.fmt("{s}/../{s}", .{
+                b.install_path, 
+                example.installed_path orelse default_path
+            })
+        });
+        run_example.step.dependOn(&inst_art.step);
+        run_example.step.dependOn(&inst_dir.step);
+
+        const example_step = b.step(
+            b.fmt("example_{s}", .{example_name}), 
+            b.fmt("Run the {s} example", .{example_name})
+        );
+        example_step.dependOn(&example.step);
+        example_step.dependOn(&run_example.step);
+    }
 }

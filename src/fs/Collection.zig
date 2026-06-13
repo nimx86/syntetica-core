@@ -221,10 +221,9 @@ pub inline fn init(path: []const u8, gpa: Allocator) !Self {
 }
 
 pub fn initBufferSize(path: []const u8, gpa: Allocator, buf_size: usize) !Self {
+    // TODO: This is wrong, fix it.
     root_path = try std.fs.selfExeDirPathAlloc(gpa);
     root_dir = try std.fs.openDirAbsolute(root_path, .{});
-
-    std.debug.print("FILE: {s}/{s}\n", .{root_path, path});
 
     return .{
         .buffer = try gpa.alloc(u8, buf_size),

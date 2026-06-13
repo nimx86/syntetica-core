@@ -1,11 +1,12 @@
 //! intermediate representation of the UI layout
 
 const std = @import("std");
+
 const types = @import("types.zig");
-const IR = @This();
-const Vec2 = @import("default").Vec2.Vec2(types.IntType);
 const meta = @import("meta.zig");
 
+const IR = @This();
+const Vec2 = @import("default").Vec2.Vec2(types.IntType);
 const IntType = types.IntType;
 
 const ElementEnum = enum {
@@ -185,3 +186,15 @@ pub fn getElementByID(self: *IR, elem_uid: types.UIDType) !*Element {
     if(v == null) return error.ElementNotFound
     else return v.?;
 }
+
+// pub fn insertElement(self: *IR, uid: types.UIDType, addelem: Element) !void {
+//     if(elem.which != .container or elem.which != .switch_container) 
+//         return error.not_a_container;
+//
+//     // resize the tree to hold an aditional element
+//     self.tree = self.allocator.realloc(self.tree, self.tree.len + 1);
+//
+//     const elem = try self.getElementByID(uid);
+//     const slice_ptr = elem.children.?.ptr;
+//     const index = @intFromPtr(slice_ptr) - @intFromPtr(self.tree);
+// }
