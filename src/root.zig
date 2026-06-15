@@ -14,6 +14,8 @@ pub const vk = @import("vulkan");
 
 const log = std.log.scoped(.root);
 const Synt = @This();
+/// syntetica version
+pub const version: default.Version = .initVer(0, 1, 0, 0);
 
 ecs: ECS = .empty,
 
