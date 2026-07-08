@@ -5,6 +5,7 @@ const std = @import("std");
 const builtin = @import("builtin");
 const vk = @import("vulkan");
 const core = @import("syntetica");
+const glfw = @import("glfw");
 
 const Instance = @import("RenderInstance.zig");
 
@@ -19,6 +20,7 @@ pub const empty = RenderContext{
     .vk_device_extensions = .empty,
 
     .options = .empty,
+    .window = undefined,
 
     .vkb = undefined,
     
@@ -49,6 +51,7 @@ vk_instance_extensions: std.ArrayList([*:0]const u8),
 vk_device_extensions: std.ArrayList([*:0]const u8),
 
 options: RenderContext.InitOptions,
+window: *glfw.Window,
 
 // wrappers // 
 vkb: vk.BaseWrapper,
@@ -160,7 +163,8 @@ fn checkInstanceExtensionSupport(w: *RenderContext) !SupportResult {
 }
 
 fn createSurface(w: *RenderContext) !void {
-    return w.options.createSurfaceCallback(w.instance.handle, &w.surface, w.options.window);
+    std.debug.print("instance handle: {}\nwindow ptr: {*}\nsurface handle: {}\n", .{w.instance.handle, w.window, w.surface});
+    return glfw.createWindowSurface(w.instance.handle, w.window, null, &w.surface);
 }
 
 fn physicalDeviceSupportsExtensions(w: RenderContext, pdev: vk.PhysicalDevice) !bool {
@@ -348,6 +352,7 @@ fn createInstance(w: *RenderContext, appname: [*:0]const u8) !void {
 
     vki.* = vk.InstanceWrapper.load(instance, w.vkb.dispatch.vkGetInstanceProcAddr.?);
     w.instance = vk.InstanceProxy.init(instance, vki);
+    log.debug("instance ptr: {}", .{w.instance.handle});
 }
 
 fn destroyInstance(w: *RenderContext) void {
@@ -402,14 +407,17 @@ pub const InitOptions = struct {
 
 pub fn init(
     alloc: Alloc, 
-    options: InitOptions,
+    window: *glfw.Window,
 ) !*RenderContext {
+    std.debug.print("window pointer: {*}\n", .{window});
+
     var self: *RenderContext = try alloc.create(RenderContext);
     self.* = .empty;
 
     self.allocator = alloc;
 
-    self.options = options;
+    self.options = undefined;
+    self.window = window;
 
     return self;
 }
@@ -454,11 +462,10 @@ pub fn load(w: *RenderContext, appname: [*:0]const u8, loader: anytype) !void {
 
     try w.createInstance(appname);
     errdefer w.destroyInstance();
+    std.debug.print("instance bound to: {}\n", .{w.instance.handle});
 
-    if(builtin.mode == .Debug) {
-        try w.setupDebug();
-        errdefer w.destroyDebug();
-    }
+    if(builtin.mode == .Debug) try w.setupDebug();
+    errdefer if(builtin.mode == .Debug) w.destroyDebug();
 
     try w.createSurface();
     errdefer w.instance.destroySurfaceKHR(w.surface, null);

@@ -81,6 +81,16 @@ pub fn Vec2(T: type) type {
             self.y -= v;
         }
 
+        pub fn eql(a: *Self, b: Self) bool {
+            if(a.x == b.x and a.y == b.y) return true;
+            return false;
+        }
+
+        pub fn eqlScalar(a: *Self, b: T) bool {
+            if(a.x == b and a.y == T) return true;
+            return false;
+        }
+
         /// depreciated
         pub fn toPhVec(self: Self) PhVec(T) {
             const magnitute: T = @sqrt(self.x * self.x + self.y * self.y);

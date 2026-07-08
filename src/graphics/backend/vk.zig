@@ -1,5 +1,3 @@
-//! Only this source file is allowed to import and use glfw for future proofing
-
 const std = @import("std");
 const builtin = @import("builtin");
 const glfw = @import("glfw");
@@ -51,10 +49,7 @@ pub fn init(
 ) !Wrapper {
     var self: Wrapper = .empty;
 
-    self.ctx = try .init(allocator, .{ 
-        .createSurfaceCallback = syntCreateSurfaceCallback, 
-        .window = @alignCast(@ptrCast(window)),
-    });
+    self.ctx = try .init(allocator, window);
 
     try addExtensions(self.ctx);
 
@@ -82,7 +77,7 @@ fn syntCreateSurfaceCallback(
     surface: *vk.SurfaceKHR,
     window_ptr_anon: *anyopaque,
 ) anyerror!void {
-    const window_ptr: *glfw.Window = @alignCast(@ptrCast(window_ptr_anon));
+    const window_ptr: *glfw.Window = @ptrCast(@alignCast(window_ptr_anon));
     return glfw.createWindowSurface(instance, window_ptr, null, surface);
 }
 
@@ -94,3 +89,26 @@ fn getGlfwInstanceProcAddress(
 }
 
 /////////////////////////
+// RENDERER VTABLE IMPLEMENTATION ////////
+pub const RendererInterface = struct {
+    const Renderer = @import("graphics").Renderer;
+    const Synt = @import("syntetica");
+
+    pub const vtable: Renderer.GraphicsInterfaceVtable = .{
+        .init = RendererInterface.init,
+        .deinit = RendererInterface.deinit,
+    };
+
+    fn init(ptr: **anyopaque, synt: *Synt) anyerror!void {
+        const wrapper = try synt.allocator.create(Wrapper);
+        std.debug.print("window_ptr_init_vtable: {*}\n", .{synt.renderer.window});
+        wrapper.* = try .init(synt.allocator, synt.renderer.window, synt.appname);
+
+        ptr.* = wrapper;
+    }
+
+    fn deinit(ptr: *anyopaque) void {
+        const wrapper: *Wrapper = @alignCast(@ptrCast(ptr));
+        wrapper.deinit();
+    }
+};
