@@ -66,6 +66,7 @@ pub fn build(b: *std.Build) void {
     _ = syntetica_core.addModule("ui");
     _ = syntetica_core.addModule("ecs");
     _ = syntetica_core.addModule("fs");
+    _ = syntetica_core.addModule("io");
     const mod_graphics = syntetica_core.addModule("graphics");
 
     const vulkan_headers = b.dependency("vulkan_headers", .{});
