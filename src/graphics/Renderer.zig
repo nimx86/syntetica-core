@@ -1,8 +1,8 @@
 const std = @import("std");
 const Synt = @import("syntetica");
-pub const glfw = @import("glfw");
 
 pub const vk = @import("backend/vk.zig");
+pub const raylib = @import("backend/raylib/raylib.zig");
 
 const input = Synt.input;
 const Renderer = @This();
@@ -11,6 +11,7 @@ const log = std.log.scoped(.renderer);
 pub const Implementation = enum {
     vulkan,
     opengl,
+    raylib,
 
     pub fn getVtable(impl: Implementation) GraphicsInterfaceVtable {
         return switch (impl) {
@@ -20,11 +21,9 @@ pub const Implementation = enum {
     }
 };
 
-pub const WindowData = struct{
-    syntetica_instance: *Synt,
-};
-
 pub const GraphicsInterfaceVtable = struct {
+    id_string: []const u8 = "uknown",
+
     /// this function accepts a pointer to a pointer where the underlying 
     /// implementation is expected to allocate a pointer to it's data and 
     /// set the first argument to that pointer.
@@ -32,32 +31,27 @@ pub const GraphicsInterfaceVtable = struct {
 
     /// deinitializes the implementation
     deinit: *const fn(*anyopaque) void,
+
+    /// checks if the implementation's main window is open
+    isWindowOpen: *const fn(*anyopaque) bool,
+
+    closeWindow: *const fn(*anyopaque) void,
 };
 
-window: *glfw.Window,
 vtable: GraphicsInterfaceVtable,
 data_ptr: *anyopaque,
 
 /// Initialize the renderer with a chosen "official" implementation
-pub fn init(synt: *Synt, allocator: std.mem.Allocator, impl: Implementation) !void {
-    return Renderer.initImplementation(synt, allocator, impl.getVtable());
+pub fn init(synt: *Synt, impl: Implementation) !void {
+    return Renderer.initImplementation(synt, impl.getVtable());
 }
 
 /// Initialize the renderer with a custom implmentation in the form 
 /// of a vtable
-pub fn initImplementation(synt: *Synt, allocator: std.mem.Allocator, vtable: GraphicsInterfaceVtable) !void {
-
-    // create a window
-    glfw.windowHint(.client_api, .no_api);
-    glfw.windowHint(.resizable, false);
-
-    synt.renderer.window = try glfw.createWindow(1000, 800, "My window", null, null);
-    log.debug("window ptr: {*}", .{synt.renderer.window});
-
-    const window_data = try allocator.create(WindowData);
-    window_data.syntetica_instance = synt;
-    synt.renderer.window.setUserPointer(window_data);
-
+pub fn initImplementation(
+    synt: *Synt, 
+    vtable: GraphicsInterfaceVtable
+) !void {
     synt.renderer.vtable = vtable;
 
     try synt.renderer.vtable.init(&synt.renderer.data_ptr, synt);
@@ -70,7 +64,11 @@ pub fn changeImplementation(r: *Renderer, synt: *Synt, impl: Implementation) !vo
 
 /// Change the implementation to a custom vtable without 
 /// resetting the renderer
-pub fn changeImplementationCustom(r: *Renderer, synt: *Synt, vtable: GraphicsInterfaceVtable) !void {
+pub fn changeImplementationCustom(
+    r: *Renderer, 
+    synt: *Synt, 
+    vtable: GraphicsInterfaceVtable
+) !void {
     r.vtable.deinit(r.data_ptr);
     r.vtable = vtable;
 
@@ -78,12 +76,16 @@ pub fn changeImplementationCustom(r: *Renderer, synt: *Synt, vtable: GraphicsInt
 }
 
 /// deinitializes the renderer
-pub fn deinit(renderer: *Renderer, allocator: std.mem.Allocator) void {
+pub fn deinit(renderer: *Renderer) void {
     renderer.vtable.deinit(renderer.data_ptr);
 
-    const window_data = renderer.window.getUserPointer(WindowData).?;
-    allocator.destroy(window_data);
-
     renderer.window.destroy();
+}
 
+pub fn isWindowOpen(renderer: *Renderer) bool {
+    return renderer.vtable.isWindowOpen(renderer.data_ptr);
+}
+
+pub fn closeWindow(renderer: *Renderer) void {
+    renderer.vtable.closeWindow(renderer.data_ptr);
 }

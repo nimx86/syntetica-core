@@ -933,10 +933,9 @@ pub const SimpleLinked = struct {
             /// populates the free index array from the start of the array to the `data.len - occupied`
             /// with numbers from (and including) `start` argument. Should be ran only when all of the 
             /// available indices are exhausted.
-            inline fn populateFreeIndices(self: *ThisUnmanaged, start: usize) void {
+            fn populateFreeIndices(self: *ThisUnmanaged, start: usize) void {
                 for(self.free_index[0..self.data.len - self.occupied], start..) |*index_space, i|
                     index_space.* = i;
-                std.debug.print("POPULATING: {any}\n", .{self.free_index[0..self.data.len]});
             }
 
             /// ensure all of the internal arrays can fit the data they need to fit.
