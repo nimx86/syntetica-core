@@ -1021,7 +1021,7 @@ pub const SimpleLinked = struct {
                 std.debug.print("------------ MEM DUMP -------------------------\n", .{});
                 std.debug.print("root is: {?}\n", .{self.root});
                 std.debug.print("occupied: {}\n", .{self.occupied});
-                std.debug.print("DATA: << {any} >>\n", .{self.data});
+                //std.debug.print("DATA: << {any} >>\n", .{self.data});
                 std.debug.print("LINKS: << {any} >>\n", .{self.links[0..self.data.len]});
                 std.debug.print("AVAILABLE: << {any} >>\n", .{self.free_index[0..self.data.len]});
 
@@ -1034,6 +1034,15 @@ pub const SimpleLinked = struct {
                 std.debug.print("------------ END DUMP -------------------------\n", .{});
             }
 
+            /// for a given index iterates over the free indices, if the index 
+            /// is found, returns false (the index is free to use), otherwise 
+            /// returns true (the index was taken)
+            pub fn isIndexTaken(self: *ThisUnmanaged, id: Index) bool {
+                for(self.free_index[0..self.occupied]) |free_id| 
+                    if(free_id == id) return false;
+                return true;
+            }
+
             /// Reserves an index for use without puting anything in it's data space.
             pub fn reserve(self: *ThisUnmanaged, gpa: Allocator) !Index {
                 try self.ensureEnoughCapacity(gpa);
@@ -1044,6 +1053,24 @@ pub const SimpleLinked = struct {
                 self.linkIndex(i);
 
                 return i;
+            }
+
+            /// Result value for function .reserveGetPtr(...)
+            const ReserveGetPtrResult = struct {
+                index: Index,
+                ptr: *T,
+            };
+
+            /// reserves an index and gets a pointer to the data owned by the free list.
+            /// Returns a ReserveGetPtrResult which has the index and the pointer.
+            pub fn reserveGetPtr(self: *ThisUnmanaged, gpa: Allocator) !ReserveGetPtrResult {
+                const id = self.reserve(gpa);
+                const ptr = self.getPtr(id);
+
+                return .{
+                    .index = id,
+                    .ptr = ptr,
+                };
             }
 
             /// gets the pointer to an element at index `i`
