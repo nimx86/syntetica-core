@@ -2,6 +2,7 @@ const std = @import("std");
 const builtin = @import("builtin");
 const glfw = @import("glfw");
 const default = @import("default");
+const Syntetica = @import("syntetica");
 pub const vulkan_lib = @import("vulkan");
 
 pub const RenderContext = @import("vulkan/RenderContext.zig");
@@ -11,12 +12,15 @@ pub const RenderInstance = @import("vulkan/RenderInstance.zig");
 const vk = vulkan_lib;
 const Allocator = std.mem.Allocator;
 const Wrapper = @This();
+const log = std.log.scoped(.vulkan);
 
 pub const empty = Wrapper{
     .ctx = undefined,
     .instance = .empty,
+    .window = undefined,
 };
 
+window: *glfw.Window,
 ctx: *RenderContext,
 instance: RenderInstance,
 
@@ -44,19 +48,27 @@ fn addExtensions(context: *RenderContext) !void {
 
 pub fn init(
     allocator: Allocator, 
-    window: *glfw.Window, 
-    appname: [*:0]const u8
+    appname: [*:0]const u8,
+//    _: *Syntetica,
 ) !Wrapper {
+    try glfw.init();
+
     var self: Wrapper = .empty;
 
-    self.ctx = try .init(allocator, window);
+    // create a window
+    glfw.windowHint(.client_api, .no_api);
+    glfw.windowHint(.resizable, false);
+
+    self.window = try glfw.createWindow(1000, 800, "My window", null, null);
+
+    self.ctx = try .init(allocator, self.window);
 
     try addExtensions(self.ctx);
 
     try self.ctx.load(appname, getGlfwInstanceProcAddress);
 
     var extent: default.Vec2.Vec2(c_int) = .initScalar(0);
-    glfw.getFramebufferSize(window, &extent.x, &extent.y);
+    glfw.getFramebufferSize(self.window, &extent.x, &extent.y);
 
     self.instance = try .init(self.ctx, .{
         .width = @intCast(extent.x),
@@ -69,6 +81,8 @@ pub fn init(
 pub fn deinit(self: *Wrapper) void {
     self.instance.deinit(self.ctx);
     self.ctx.deinit();
+
+    glfw.terminate();
 }
 
 // CALLBACKS //////////
@@ -94,15 +108,32 @@ pub const RendererInterface = struct {
     const Renderer = @import("graphics").Renderer;
     const Synt = @import("syntetica");
 
+    const ImplError = Renderer.GraphicsInterfaceVtable.ImplError;
+
     pub const vtable: Renderer.GraphicsInterfaceVtable = .{
+        .id_string = "vulkan",
+
         .init = RendererInterface.init,
         .deinit = RendererInterface.deinit,
+        .getWindowPointer = getWindowPointer,
+        .isWindowOpen = undefined,
+        .closeWindow = undefined,
+        .getWindowSize = undefined,
+        .vramLoadTexture = undefined,
+        .vramUnloadTexture = undefined,
+        .drawTexture = undefined,
     };
 
-    fn init(ptr: **anyopaque, synt: *Synt) anyerror!void {
-        const wrapper = try synt.allocator.create(Wrapper);
-        std.debug.print("window_ptr_init_vtable: {*}\n", .{synt.renderer.window});
-        wrapper.* = try .init(synt.allocator, synt.renderer.window, synt.appname);
+    fn init(ptr: **anyopaque, synt: *Synt) ImplError!void {
+        const wrapper = synt.allocator.create(Wrapper) catch |e| {
+            log.err("Failed allocating memory for wrapper, error: {}", .{e});
+            return ImplError.InitFailed;
+        };
+
+        wrapper.* = Wrapper.init(synt.allocator, synt.appname) catch |e| {
+            log.err("Failed initializing wrapper, error: {}", .{e});
+            return ImplError.InitFailed;
+        };
 
         ptr.* = wrapper;
     }
@@ -110,5 +141,10 @@ pub const RendererInterface = struct {
     fn deinit(ptr: *anyopaque) void {
         const wrapper: *Wrapper = @alignCast(@ptrCast(ptr));
         wrapper.deinit();
+    }
+
+    fn getWindowPointer(ptr: *anyopaque) *anyopaque {
+        const wrapper: *Wrapper = @alignCast(@ptrCast(ptr));
+        return @alignCast(@ptrCast(wrapper.ctx.window));
     }
 };

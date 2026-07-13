@@ -1,3 +1,5 @@
+pub const glfw = @import("glfw");
+
 pub const Color = @import("graphics/Color.zig");
 pub const Vertex = @import("graphics/Vertex.zig");
 

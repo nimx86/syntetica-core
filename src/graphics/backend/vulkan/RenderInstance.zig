@@ -20,6 +20,10 @@ pub const empty: RenderInstance = .{
     .pipeline_layout = .null_handle,
     .render_pass = .null_handle,
     .pipeline = .null_handle,
+    .framebuffers = undefined,
+    .command_pool = .null_handle,
+    .command_buffer = .null_handle,
+    .vertex_buffer = .null_handle
 };
 
 pub const vertex_info = struct {
@@ -52,6 +56,8 @@ render_pass: vk.RenderPass,
 pipeline: vk.Pipeline,
 framebuffers: []vk.Framebuffer,
 command_pool: vk.CommandPool,
+command_buffer: vk.CommandBuffer,
+vertex_buffer: vk.Buffer,
 
 fn initPipeline(instance: *RenderInstance, ctx: *Context) !void {
     const create_info = vk.PipelineLayoutCreateInfo{
@@ -101,12 +107,14 @@ fn createRenderPass(instance: *RenderInstance, ctx: *Context) !void {
 }
 
 fn createPipeline(instance: *RenderInstance, ctx: *Context) !void {
+    // create the vertex shader, runs on every vertex
     const vertex_shader_create_info = vk.ShaderModuleCreateInfo{
         .code_size = default_shaders.vertex.len,
         .p_code = @ptrCast(&default_shaders.vertex),
     };
     const vertex_shader = try ctx.device.createShaderModule(&vertex_shader_create_info, null);
 
+    // create the fragment shader, runs on every pixel of the screen
     const fragment_shader_create_info = vk.ShaderModuleCreateInfo{
         .code_size = default_shaders.fragment.len,
         .p_code = @ptrCast(&default_shaders.fragment),
@@ -133,6 +141,7 @@ fn createPipeline(instance: *RenderInstance, ctx: *Context) !void {
         .p_vertex_attribute_descriptions = &vertex_info.attribute_description,
     };
 
+    // the input assembly stage collects all the input data for the pipeline
     const input_assembly_state_create_info = vk.PipelineInputAssemblyStateCreateInfo{
         .topology = .triangle_list,
         .primitive_restart_enable = .false,
@@ -145,6 +154,7 @@ fn createPipeline(instance: *RenderInstance, ctx: *Context) !void {
         .p_scissors = undefined, // -- || --
     };
 
+    // rasterization step converts our verticies into pixels
     const rasterization_state_create_info = vk.PipelineRasterizationStateCreateInfo{
         .depth_clamp_enable = .false,
         .rasterizer_discard_enable = .false,
@@ -166,6 +176,7 @@ fn createPipeline(instance: *RenderInstance, ctx: *Context) !void {
         .alpha_to_one_enable = .false,
     };
 
+    // enables blending of fragments, used for transparency and such.
     const color_blend_attachment_state = vk.PipelineColorBlendAttachmentState{
         .blend_enable = .false,
         .src_color_blend_factor = .one,
@@ -185,6 +196,8 @@ fn createPipeline(instance: *RenderInstance, ctx: *Context) !void {
         .blend_constants = [_]f32{ 0, 0, 0, 0 },
     };
 
+    // the dynamic state is used so we can change some specific things 
+    // without having to recreate the pipeline.
     const dynamic_state = [_]vk.DynamicState{ .viewport, .scissor };
     const dynamic_state_create_info = vk.PipelineDynamicStateCreateInfo{
         .flags = .{},
@@ -252,9 +265,20 @@ pub fn init(context: *Context, extent: vk.Extent2D) !RenderInstance {
     self.swapchain = try .init(context, context.allocator, extent, .null_handle);
 
     try self.initPipeline(context);
+    errdefer context.device.destroyPipelineLayout(self.pipeline_layout, null);
+    
     try self.createRenderPass(context);
+    errdefer context.device.destroyRenderPass(self.render_pass, null);
+    
     try self.createPipeline(context);
+    errdefer context.device.destroyPipeline(self.pipeline, null);
+    
     try self.createFrameBuffers(context);
+    errdefer {
+        for(self.framebuffers) |buf| context.device.destroyFramebuffer(buf, null);
+        context.allocator.free(self.framebuffers);
+    }
+
 
     const command_pool_create_info = vk.CommandPoolCreateInfo{
         .queue_family_index = context.graphics_queue.family,
@@ -262,13 +286,27 @@ pub fn init(context: *Context, extent: vk.Extent2D) !RenderInstance {
     self.command_pool = 
         try context.device.createCommandPool(&command_pool_create_info, null);
 
+    // TODO: make this not be a hardcoded value
+    self.vertex_buffer = try context.device.createBuffer(&vk.BufferCreateInfo{
+        .size = @sizeOf(Vertex) * 20 * 3,
+        .usage = .{.transfer_dst_bit = true, .vertex_buffer_bit = true},
+        .sharing_mode = .exclusive,
+    }, null);
+    errdefer context.device.destroyBuffer(self.vertex_buffer, null);
+    const memory_requirements = 
+        context.device.getBufferMemoryRequirements(self.vertex_buffer);
+    const memory = try context.allocate(memory_requirements, .{ .device_local_bit = true });
+    errdefer context.free(memory);
+
 
     return self;
 }
 
 /// does not deinitialize the context
 pub fn deinit(self: *RenderInstance, ctx: *Context) void {
+    ctx.device.destroyBuffer(self.vertex_buffer, null);
     ctx.device.destroyCommandPool(self.command_pool, null);
+    ctx.allocator.free(self.framebuffers);
     for(self.framebuffers) |buf| ctx.device.destroyFramebuffer(buf, null);
     ctx.device.destroyPipeline(self.pipeline, null);
     ctx.device.destroyRenderPass(self.render_pass, null);

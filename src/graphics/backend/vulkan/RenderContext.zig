@@ -390,6 +390,25 @@ fn destroyDebug(w: *RenderContext) void {
     w.instance.destroyDebugUtilsMessengerEXT(w.debug_messanger, null);
 }
 
+fn findMemoryTypeIndex(
+    ctx: *RenderContext, 
+    mem_types: u32, 
+    flags: vk.MemoryPropertyFlags
+) !u32 {
+    for(
+        ctx.memory_properties.memory_types[0..ctx.memory_properties.memory_type_count], 
+        0..
+    ) |mem_type, i| {
+        // for every memory type we check if it's suitable, 
+        // https://docs.vulkan.org/tutorial/latest/04_Vertex_buffers/01_Vertex_buffer_creation.html#_memory_requirements
+        const suitable_bit = @as(u32, 1) << @truncate(i);
+        if(mem_types & suitable_bit != 0 and mem_type.property_flags.contains(flags))
+            return @truncate(i);
+    } else {
+        return error.NoSuitableMemoryType;
+    }
+}
+
 pub const InitOptions = struct {
     /// takes a function pointer of signature fn(vk.Instance, vk.SurfaceKHR, *anyopaque),
     /// where the arguments are as follows: the vulkan instance, vulkan surface and the 
@@ -496,6 +515,24 @@ pub fn deinit(w: *RenderContext) void {
     w.instance.destroySurfaceKHR(w.surface, null);
     if(builtin.mode == .Debug) w.destroyDebug();
     w.destroyInstance();
+}
+
+pub fn allocate(
+    ctx: *RenderContext, 
+    requirements: vk.MemoryRequirements, 
+    flags: vk.MemoryPropertyFlags
+) !vk.DeviceMemory {
+    const allocate_info = vk.MemoryAllocateInfo{
+        .allocation_size = requirements.size,
+        .memory_type_index = 
+            try ctx.findMemoryTypeIndex(requirements.memory_type_bits, flags),
+    };
+
+    return try ctx.device.allocateMemory(&allocate_info, null);
+}
+
+pub fn free(ctx: *RenderContext, memory: vk.DeviceMemory) void {
+    ctx.device.freeMemory(memory, null);
 }
 
 pub fn createRenderInstance(w: *RenderContext) Instance {
