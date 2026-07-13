@@ -1,166 +1,257 @@
 const std = @import("std");
-const Self = @This();
+const default = @import("default");
 
+const Entity = @import("Entity.zig");
+
+const Component = @This();
+const FreeList = default.FreeList.SimpleLinked;
 const Allocator = std.mem.Allocator;
-const Index = usize;
+pub const Index = enum(usize){_};
 
-pub const TableUnmanaged = struct {
-    pub const empty: TableUnmanaged = .{
-        .grow_capacity = 20,
-        .table = .empty,
-    };
-
-    const TableType = std.ArrayListUnmanaged(Registry);
-
-    grow_capacity: u32 = 20,
-    table: TableType,
-
-    pub fn init(allocator: std.mem.Allocator, grow_capacity: u32) !TableUnmanaged {
-        return .{
-            .grow_capacity = grow_capacity,
-            .table = try TableType.initCapacity(allocator, grow_capacity),
-        };
-    }
-
-    pub fn deinit(self: *TableUnmanaged, gpa: std.mem.Allocator) void {
-        for(self.table.items) |*registry| {
-            registry.deinit(gpa);
-        }
-        self.table.deinit(gpa);
-    }
-
-    pub fn add(self: *TableUnmanaged, gpa: Allocator, reg: Registry) !usize {
-        try self.table.append(gpa, reg);
-        return self.table.items.len - 1;
-    }
-
-    pub fn get(self: *TableUnmanaged, regID: Index) *Registry {
-        return &self.table.items[regID];
-    }
-
-    pub fn getTyped(self: *TableUnmanaged, regID: Index, T: anytype) *TypedRegistry(T) {
-        return .{
-            .data = @ptrCast(@alignCast(self.table.items[regID])),
-        };
-    }
+pub const ComponentData = struct {
+    /// must be allocated on the heap
+    name: []u8,
+    data_size: usize,
+    data: std.ArrayList(u8) = .empty,
+    owners: std.ArrayList(Entity.EntityDataLink) = .empty,
 };
 
-pub const Registry = struct {
-    pub const empty: Registry = .{
-        .grow_size = 0,
-        .data_size = 0,
-        .data = .empty,
-    };
-
-    pub const Iterator = struct {
-        reg: *Registry,
-        next_id: usize = 0,
-
-        pub fn next(self: *Iterator) ?[]u8 {
-            if(self.next_id == self.reg.data.items.len) return null;
-            const data: []u8 = 
-                self.reg.data.items[self.next_id..self.next_id + self.reg.data_size];
-            self.next_id += self.reg.data_size;
-            return data;
-        }
-    };
-    pub fn interator(self: *Registry) Iterator {
-        return .{
-            .reg = self,
-        };
-    }
-
-    grow_size: usize = 20,
-    data_size: usize = 0,
-    data: std.ArrayListUnmanaged(u8),
-
-    pub fn initWithType(comptime T: type, grow_size: usize, gpa: Allocator) !Registry {
-        return init(grow_size, @sizeOf(T), gpa);
-    }
-
-    pub fn init(grow_size: usize, data_size: usize, gpa: Allocator) !Registry {
-        var self: Registry = .empty;
-
-        self.grow_size = grow_size;
-        self.data_size = data_size;
-
-        try self.data.ensureTotalCapacity(gpa, self.grow_size * self.data_size);
-
-        return self;
-    }
-
-    pub fn deinit(self: *Registry, gpa: Allocator) void {
-        self.data.deinit(gpa);
-    }
-
-    pub inline fn ensureTotalCapacity(
-        self: *Registry, 
-        gpa: Allocator, 
-        new_capacity: usize
-    ) !void {
-        return self.data.ensureTotalCapacity(gpa, new_capacity);
-    }
-
-    pub inline fn ensureFitsNItems(self: *Registry, gpa: Allocator, item_amount: usize) !void {
-        return self.data.ensureTotalCapacity(
-            gpa, 
-            self.data.items.len + self.data_size * item_amount
-        );
-    }
-
-    pub fn append(self: *Registry, gpa: Allocator, data: [*]u8) !void {
-        try self.ensureTotalCapacity(gpa, self.data.items.len + self.data_size);
-
-        return self.data.appendSliceAssumeCapacity(data[0..self.data_size]);
-    }
-
-    pub fn addOne(self: *Registry, gpa: Allocator) !usize {
-        try self.ensureTotalCapacity(gpa, self.data_size);
-        _ = self.data.appendNTimesAssumeCapacity(0, self.data_size);
-        return self.data.items.len - self.data_size;
-    }
-
-    pub fn getSlice(self: *Registry, id: usize) []u8 {
-        return self.data.items[id..id + self.data_size];
-    }
-
-    pub fn swapRemove(self: *Registry, i: usize) void {
-        @memcpy(
-            self.data.items[i..self.data_size], 
-            self.data.items[self.data.items.len - 1 - self.data_size..]
-        );
-
-        self.data.shrinkRetainingCapacity(self.data.len - 1 - self.data_size);
-    }
-
-    pub fn memDump(self: Registry) void {
-        std.debug.print("---- DUMP BEGIN ----\n", .{});
-
-        std.debug.print("DATA SIZE: {}\n", .{self.data_size});
-        std.debug.print("MEM: ", .{});
-        for(self.data.items, 0..) |byte, i| {
-            if(i % self.data_size == 0) std.debug.print("| ", .{});
-            std.debug.print("{X:02} ", .{byte});
-        }
-        std.debug.print("|\n", .{});
-
-        std.debug.print("----- DUMP END -----\n", .{});
-    }
+pub const empty: Component = .{
+    .registry = .empty,
+    .names = .empty,
 };
 
-pub fn TypedRegistry(T: type) type {
-    return struct {
-        pub const Type = T;
-        data: *std.ArrayListUnmanaged(T),
+pub const Error = error{
+    ComponentNotFound,
+};
+
+registry: FreeList.Unmanaged(ComponentData),
+names: std.StringHashMapUnmanaged(Index),
+
+/// register a component using a comptime type, the name is duplicated 
+/// and owned by the Component
+pub fn registerComponent(self: *Component, gpa: Allocator, T: type, name: []const u8) Allocator.Error!Index {
+    const alloc_test = try gpa.alloc(u8, 10);
+    defer gpa.free(alloc_test);
+
+    const component_data: ComponentData = .{ 
+        .name = try gpa.dupe(u8, name),
+        .data_size = @sizeOf(T), 
+        .data = .empty 
     };
+
+    return self.registerComponentRaw(gpa, component_data);
 }
 
+/// register a component without the need of a type, by initializing the ComponentData
+pub fn registerComponentRaw(self: *Component, gpa: Allocator, component_data: ComponentData) Allocator.Error!Index {
+    const id = try self.registry.insert(gpa, component_data);
+    try self.names.put(gpa, component_data.name, @enumFromInt(id));
 
+    return @enumFromInt(id);
+}
 
-// const enemy = ecs.Entity(.{.transform, .ai});
-// enemy.setInitialVal(.transform, .{
-//     .x = 0,
-//     .y = 0,
-// });
-//
-// ecs.instance(&enemy);
+/// insert data into the respective component's data array, returns 
+/// the index of the inserted data. Asserts that the size of data is the 
+/// same as registered component's size
+pub fn insertComponentData(
+    self: *Component, 
+    gpa: Allocator, 
+    component_id: Index, 
+    component: anytype
+) Allocator.Error!usize {
+    return self.insertComponentDataRaw(gpa, component_id, &std.mem.toBytes(component));
+}
+
+/// insert data as an array of bytes into the respective component's 
+/// data array, returns the index of the inserted data. Asserts that the 
+/// data is the same len as registered component's size.
+pub fn insertComponentDataRaw(
+    self: *Component, 
+    gpa: Allocator, 
+    component_id: Index, 
+    component_data: []const u8,
+) Allocator.Error!usize {
+    const ptr = self.registry.getPtr(@intFromEnum(component_id));
+    std.debug.assert(ptr.data_size == component_data.len);
+
+    const index = ptr.data.items.len;
+    try ptr.data.appendSlice(gpa, component_data);
+
+    return index;
+}
+
+/// make a reservation for a specific index to be used to store data
+/// in the future. Reading the memory at the given index is UB.
+pub fn reserveComponentData(
+    self: *Component,
+    gpa: Allocator,
+    component_id: Index,
+) Allocator.Error!usize {
+    const ptr = self.registry.getPtr(@intFromEnum(component_id));
+
+    const index = ptr.data.items.len;
+    try ptr.data.ensureUnusedCapacity(gpa, ptr.data_size);
+    
+    try ptr.owners.ensureUnusedCapacity(gpa, 1);
+
+    ptr.data.appendNTimesAssumeCapacity(0, ptr.data_size);
+    // ptr.owners.appendAssumeCapacity(.{ 
+    //     .entity_id = @enumFromInt(0), 
+    //     .component_index = 0 
+    // });
+    std.debug.print("reserve data at offset: {} for @{s} (size of the data array is {})\n", .{index, self.getNameByIndex(component_id), ptr.data.items.len});
+
+    return index;
+}
+
+/// releases component data and replaces the data with the 
+/// data of the last component, in the process updates data 
+/// pointers for affected entities.
+pub fn releaseComponentData(
+    self: *Component,
+    entity_registry: *Entity,
+    component_id: Index,
+    offset: usize,
+) void {
+    const reg = self.registry.getPtr(@intFromEnum(component_id));
+
+    // edge case where this is the last remaining component
+    if(reg.data.items.len <= reg.data_size) {
+        // since this is the last component, just shrink to 0.
+        reg.data.shrinkRetainingCapacity(0);
+        reg.owners.shrinkRetainingCapacity(0);
+        return;
+    }
+
+    // edge case where this is the last component in the array 
+    if(offset == reg.data.items.len - reg.data_size) {
+        reg.data.shrinkRetainingCapacity(offset);
+        reg.owners.shrinkRetainingCapacity(@divExact(offset, reg.data_size));
+        return;
+    }
+    
+    std.debug.print("argdump: component_id: {}; offset: {}\n", .{component_id, offset});
+    std.debug.print("memdump: {any}\n", .{reg.data.items});
+    std.debug.print("memcopy memory region: [{}..{}] -> [{}..{}]\n", .{
+        reg.data.items.len - reg.data_size, 
+        reg.data.items.len, 
+        offset, 
+        offset + reg.data_size
+    });
+
+    // copy the memory from the last component to the memory of the 
+    // just released component, effectively doing swapRemove.
+    @memcpy(
+        reg.data.items[offset..offset + reg.data_size], 
+        reg.data.items[reg.data.items.len - reg.data_size..]
+    );
+
+    // to get the index of the owner, we normally divide the offset by 
+    // the size of data stored. Since here the offset we are trying to get 
+    // is reg.data.items.len - reg.data_size, with the full expression being
+    // (reg.data.items.len - reg.data_size) / reg.data_size, that can be 
+    // shortened to just (reg.data.items.len / reg.data_size) - 1.
+    const replaced_data_owner = 
+        reg.owners.items[@divExact(reg.data.items.len, reg.data_size) - 1];
+    std.debug.print("get owner data from owner index {}, data is: {}\n", .{@divExact(reg.data.items.len, reg.data_size) - 1, replaced_data_owner});
+
+    // get the data of the entity which's data needs to be changed
+    const entity_data = 
+        entity_registry.registry.getPtr(@intFromEnum(replaced_data_owner.entity_id));
+
+    // make the entity have the new data offset
+    std.debug.print("previous offset: {}\n", .{entity_data.data_index[replaced_data_owner.component_index]});
+    entity_data.data_index[replaced_data_owner.component_index] = offset;
+    std.debug.print("new offset: {}\n", .{entity_data.data_index[replaced_data_owner.component_index]});
+
+    // change ownership from the now deleted entity, to the new entity
+    const owner_data = &reg.owners.items[@divExact(offset, reg.data_size)];
+    owner_data.component_index = replaced_data_owner.component_index;
+    owner_data.entity_id = replaced_data_owner.entity_id;
+
+    // shrink the owners array
+    reg.owners.shrinkRetainingCapacity(@divExact(reg.data.items.len, reg.data_size) - 1);
+
+    // after swap-removing, shrink the size of the array. Needs to be called last 
+    // since reg.data.items.len is changed
+    reg.data.shrinkRetainingCapacity(reg.data.items.len - reg.data_size);
+}
+
+/// given an index to a component and the corresponding data offset, binds 
+/// that data offset to an entity owner index.
+pub fn bindOwnerToComponentDataIndex(
+    self: *Component, 
+    gpa: Allocator, 
+    component_id: Index, 
+    offset: usize,
+    component_pointer_index: usize,
+    owner: Entity.Index
+) Allocator.Error!void {
+    _ = gpa;
+    const ptr = self.registry.getPtr(@intFromEnum(component_id));
+
+    std.debug.assert(@mod(offset, ptr.data_size) == 0);
+
+    const owner_offset = @divExact(offset, ptr.data_size);
+
+    // assume capacity while inserting because this data 
+    // was already allocated for when 
+    ptr.owners.insertAssumeCapacity(owner_offset, .{
+        .entity_id = owner, 
+        .component_index = component_pointer_index 
+    });
+}
+
+/// returns the pointer to type with data for set component id and offset. 
+/// Asserts that the size of the type is the same as the registered component's 
+/// size.
+pub fn getComponentDataPtr(self: *Component, T: type, id: Index, offset: usize) *T {
+    const raw_data_ptr = self.getComponentDataPtrRaw(id, offset);
+    std.debug.assert(@sizeOf(T) == raw_data_ptr.len);
+
+    return @alignCast(std.mem.bytesAsValue(T, raw_data_ptr));
+}
+
+/// gets the data slice of correct size for the set component id 
+/// and data index (offset).
+pub fn getComponentDataPtrRaw(
+    self: *Component,
+    id: Index,
+    offset: usize,
+) []u8 {
+    const ptr = self.registry.getPtr(@intFromEnum(id));
+    return ptr.data.items[offset..offset + ptr.data_size];
+}
+
+/// unregisters a component, does not free any data the components themselves
+/// might store
+pub fn unregisterComponent(self: *Component, gpa: Allocator, id: Index) void {
+    const ptr = self.registry.getPtr(@intFromEnum(id));
+    ptr.data.deinit(gpa);
+
+    self.registry.remove(@intFromEnum(id));
+}
+
+/// for a given name returns the appropriate index, can't error if the 
+/// name exists.
+pub fn getIndexByName(self: *Component, name: []const u8) Error!Index {
+    const id = self.names.get(name);
+
+    return id orelse Error.ComponentNotFound;
+}
+
+/// for a given index returns the name associated.
+pub fn getNameByIndex(self: *Component, id: Index) []const u8 {
+    return self.registry.get(@intFromEnum(id)).name;
+}
+
+pub fn prettyPrint(self: *Component, w: std.Io.Writer, id: Index) !void {
+    const name = self.getNameByIndex(id);
+    w.print("{}@{s}", .{@intFromEnum(id), name});
+}
+
+const DefaultComponents = @import("DefaultComponents.zig");
+
+pub const Transform = DefaultComponents.Transform;
+
