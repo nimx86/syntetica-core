@@ -209,7 +209,7 @@ pub fn tick(
 
         // get the bytes for the current component instance, the bytes are offset 
         // by ptr.data_size since we store each component instance as a sequence of bytes.
-        // we are slicing till i * ptr.data_size * 2 since the start of the component 
+        // we are slicing untill ptr.data_size * (i + 1) since the start of the component 
         // instance's data is at i * ptr.data_size, which means that for a single instance, 
         // the end is at (i * ptr.data_size) + ptr.data_size = ptr.data_size * (i + 1)
         const bytes = ptr.data.items[
