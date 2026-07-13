@@ -30,10 +30,9 @@ names: std.StringHashMapUnmanaged(Index),
 
 /// register a component using a comptime type, the name is duplicated 
 /// and owned by the Component
-pub fn registerComponent(self: *Component, gpa: Allocator, T: type, name: []const u8) Allocator.Error!Index {
-    const alloc_test = try gpa.alloc(u8, 10);
-    defer gpa.free(alloc_test);
-
+pub fn registerComponent(
+    self: *Component, gpa: Allocator, T: type, name: []const u8
+) Allocator.Error!Index {
     const component_data: ComponentData = .{ 
         .name = try gpa.dupe(u8, name),
         .data_size = @sizeOf(T), 
@@ -44,7 +43,9 @@ pub fn registerComponent(self: *Component, gpa: Allocator, T: type, name: []cons
 }
 
 /// register a component without the need of a type, by initializing the ComponentData
-pub fn registerComponentRaw(self: *Component, gpa: Allocator, component_data: ComponentData) Allocator.Error!Index {
+pub fn registerComponentRaw(
+    self: *Component, gpa: Allocator, component_data: ComponentData
+) Allocator.Error!Index {
     const id = try self.registry.insert(gpa, component_data);
     try self.names.put(gpa, component_data.name, @enumFromInt(id));
 
@@ -90,17 +91,16 @@ pub fn reserveComponentData(
 ) Allocator.Error!usize {
     const ptr = self.registry.getPtr(@intFromEnum(component_id));
 
+    // the index of the reserved data is the current lenght 
+    // of the data array
     const index = ptr.data.items.len;
     try ptr.data.ensureUnusedCapacity(gpa, ptr.data_size);
     
+    // needs to expand only by one
     try ptr.owners.ensureUnusedCapacity(gpa, 1);
 
+    // set the reserved data to 0
     ptr.data.appendNTimesAssumeCapacity(0, ptr.data_size);
-    // ptr.owners.appendAssumeCapacity(.{ 
-    //     .entity_id = @enumFromInt(0), 
-    //     .component_index = 0 
-    // });
-    std.debug.print("reserve data at offset: {} for @{s} (size of the data array is {})\n", .{index, self.getNameByIndex(component_id), ptr.data.items.len});
 
     return index;
 }
@@ -130,15 +130,6 @@ pub fn releaseComponentData(
         reg.owners.shrinkRetainingCapacity(@divExact(offset, reg.data_size));
         return;
     }
-    
-    std.debug.print("argdump: component_id: {}; offset: {}\n", .{component_id, offset});
-    std.debug.print("memdump: {any}\n", .{reg.data.items});
-    std.debug.print("memcopy memory region: [{}..{}] -> [{}..{}]\n", .{
-        reg.data.items.len - reg.data_size, 
-        reg.data.items.len, 
-        offset, 
-        offset + reg.data_size
-    });
 
     // copy the memory from the last component to the memory of the 
     // just released component, effectively doing swapRemove.
@@ -154,16 +145,13 @@ pub fn releaseComponentData(
     // shortened to just (reg.data.items.len / reg.data_size) - 1.
     const replaced_data_owner = 
         reg.owners.items[@divExact(reg.data.items.len, reg.data_size) - 1];
-    std.debug.print("get owner data from owner index {}, data is: {}\n", .{@divExact(reg.data.items.len, reg.data_size) - 1, replaced_data_owner});
 
     // get the data of the entity which's data needs to be changed
     const entity_data = 
         entity_registry.registry.getPtr(@intFromEnum(replaced_data_owner.entity_id));
 
     // make the entity have the new data offset
-    std.debug.print("previous offset: {}\n", .{entity_data.data_index[replaced_data_owner.component_index]});
     entity_data.data_index[replaced_data_owner.component_index] = offset;
-    std.debug.print("new offset: {}\n", .{entity_data.data_index[replaced_data_owner.component_index]});
 
     // change ownership from the now deleted entity, to the new entity
     const owner_data = &reg.owners.items[@divExact(offset, reg.data_size)];
@@ -179,16 +167,15 @@ pub fn releaseComponentData(
 }
 
 /// given an index to a component and the corresponding data offset, binds 
-/// that data offset to an entity owner index.
+/// that data offset to an entity owner index. Asserts that the offset is 
+/// divisible by the size of data, in other words, asserts that the offset is valid.
 pub fn bindOwnerToComponentDataIndex(
     self: *Component, 
-    gpa: Allocator, 
     component_id: Index, 
     offset: usize,
     component_pointer_index: usize,
     owner: Entity.Index
 ) Allocator.Error!void {
-    _ = gpa;
     const ptr = self.registry.getPtr(@intFromEnum(component_id));
 
     std.debug.assert(@mod(offset, ptr.data_size) == 0);
@@ -254,4 +241,3 @@ pub fn prettyPrint(self: *Component, w: std.Io.Writer, id: Index) !void {
 const DefaultComponents = @import("DefaultComponents.zig");
 
 pub const Transform = DefaultComponents.Transform;
-

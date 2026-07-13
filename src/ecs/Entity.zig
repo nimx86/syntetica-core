@@ -37,10 +37,12 @@ pub const DataSpecifier = struct {
     data_index: []usize,
 };
 
+/// TODO: determine if this is even useful
 pub const EntityTemplate = struct {
     components: []Component.Index,
 };
 
+/// the registry of alive entities
 registry: default.FreeList.SimpleLinked.Unmanaged(DataSpecifier),
 
 /// creates a new entity in the world with the given components
@@ -54,9 +56,8 @@ pub fn spawnEntity(
     const result = try self.registry.reserveGetPtr(gpa);
 
     // duplicate the wanted components into the component list
-
-    // TODO: (potential optimization) check if this memory was already allocated, if it was, perform checks to 
-    // see if it can be reused
+    // TODO: (potential optimization) check if this memory was already allocated, if it was, 
+    // perform checks to see if it can be reused
     result.ptr.component = try gpa.dupe(Component.Index, components);
 
     result.ptr.data_index = try gpa.alloc(usize, components.len);
@@ -66,19 +67,9 @@ pub fn spawnEntity(
         // reserve memory for this entity on this component
         const data_offset = try component_registry.reserveComponentData(gpa, component_id);
         
-        std.debug.print("[->] bind Entity@{} as owner of {s}@{} data at offset {}\n", .{
-            result.index, 
-            component_registry.getNameByIndex(component_id), 
-            @intFromEnum(component_id), 
-            data_offset,
-        });
         // bind this entity as the owner of the allocated memory
         try component_registry.bindOwnerToComponentDataIndex(
-            gpa, 
-            component_id, 
-            data_offset,
-            i,
-            @enumFromInt(result.index)
+            component_id, data_offset, i, @enumFromInt(result.index)
         );
 
         // store the indexes to our data
@@ -88,7 +79,12 @@ pub fn spawnEntity(
 }
 
 /// kill an entity
-pub fn killEntity(self: *Entity, gpa: Allocator, component_registry: *Component, entity_id: Index) void {
+pub fn killEntity(
+    self: *Entity, 
+    gpa: Allocator, 
+    component_registry: *Component, 
+    entity_id: Index
+) void {
     const entity = self.registry.getPtr(@intFromEnum(entity_id));
     for(entity.data_index, entity.component) |offset, component_id| {
         component_registry.releaseComponentData(self, component_id, offset);
