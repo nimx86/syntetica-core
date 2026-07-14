@@ -52,6 +52,10 @@
             .url = "git+https://github.com/KhronosGroup/Vulkan-Headers#015e25c3c91b70eb1a754d36fb14c4ba6ad9b0b9",
             .hash = "N-V-__8AAHAZeALsJNAOsFHuMyyXDuoFVG48EQdnJGNAZ3Th",
         },
+        .zig_stb_image = .{
+            .url = "git+https://github.com/JacobCrabill/zig-stb-image#db40631ef191d3692a706b142f524022c6be80d7",
+            .hash = "zig_stb_image-2.28.0-2-9dD1dfoYBQCzF7IA9_-tSbsF1PgN7HGfzDzGVRG2BoUY",
+        },
     },
     .paths = .{
         "build.zig",

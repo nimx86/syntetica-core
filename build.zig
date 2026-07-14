@@ -89,6 +89,12 @@ pub fn build(b: *std.Build) void {
         mod_graphics.linkLibrary(zglfw.artifact("glfw"));
     }
 
+    const zig_stb_image = b.dependency("zig_stb_image", .{
+        .target = target,
+        .optimize = optimize,
+    });
+    mod_graphics.addImport("stb-image", zig_stb_image.module("stb_image"));
+
     // add shaders
     const spirv_target = b.resolveTargetQuery(.{
         .cpu_arch = .spirv32,
@@ -146,6 +152,13 @@ pub fn build(b: *std.Build) void {
     syntetica_core.addLibrary("raygui", raygui);
 
     syntetica_core.confirm();
+
+    const resources_install = b.addInstallDirectory(.{ 
+        .source_dir = b.path("src/res"),
+        .install_dir = .prefix,
+        .install_subdir = "res/tex/synt" 
+    });
+    b.getInstallStep().dependOn(&resources_install.step);
 
     // EXAMPLES ///////////////////////////
     const examples = [_][]const u8{

@@ -10,78 +10,74 @@ pub const fs = @import("fs");
 pub const ui = @import("ui");
 pub const graphics = @import("graphics");
 
-pub const input = @import("input.zig");
+/// not to be confused with std.Io
+pub const engine_io = @import("io");
 
 const log = std.log.scoped(.root);
 const Synt = @This();
-const glfw = graphics.Renderer.glfw;
+pub const KeyBind = engine_io.graphical.KeyBindManager.KeyBind;
+
+// TODO: get rid of this
+const glfw = graphics.glfw;
 /// syntetica version
 pub const version: default.Version = .initVer(0, 1, 0, 0);
 
 allocator: std.mem.Allocator,
 appname: [*:0]const u8 = "unnamed",
-//ecs: ECS = .empty,
-keybinds: std.AutoHashMapUnmanaged(@typeInfo(glfw.Key).@"enum".tag_type, std.ArrayList(input.GlobalKeyBind)),
 
+ecs: ECS.EntityComponentSystem,
+components: ECS.DefaultComponents,
+
+keybinds: engine_io.graphical.KeyBindManager,
 renderer: graphics.Renderer,
+textures: graphics.TextureManager,
 
-fn glfwKeyCallback(
-    w: *glfw.Window, 
-    k: glfw.Key, 
-    _: c_int, 
-    action: glfw.Action, 
-    glfw_modifier: glfw.Mods
-) callconv(.c) void {
-    const window_data = w.getUserPointer(graphics.Renderer.WindowData).?;
+io: std.Io,
 
-    const keybinds = 
-        window_data.syntetica_instance.keybinds.get(@intFromEnum(k)) orelse return;
-
-    var mod: input.Modifier = .{
-        .shift = glfw_modifier.shift,
-        .alt = glfw_modifier.alt,
-        .caps_lock = glfw_modifier.caps_lock,
-        .control = glfw_modifier.control,
-        .num_lock = glfw_modifier.num_lock,
-        .super = glfw_modifier.super,
-        .repeated = false,
-        .pressed = false,
-    };
-
-    switch (action) {
-        .press => mod.pressed = true,
-        .repeat => mod.repeated = true,
-        .release => {},
-    }
-
-    for(keybinds.items) |keybind|
-        if(keybind.modifier.toInt() == mod.toInt()) (keybind.function orelse continue)(window_data.syntetica_instance);
-}
+prefix_dir: std.Io.Dir,
 
 fn init(synt: *Synt) !void {
-    try glfw.init();
-
-    try graphics.Renderer.init(
-        synt, 
-        synt.allocator, 
-        if(glfw.isVulkanSupported()) .vulkan else .opengl
-    );
-
-    _ = synt.renderer.window.setKeyCallback(glfwKeyCallback);
+    _ = synt;
 }
 
 fn deinit(synt: *Synt) void {
-    synt.renderer.deinit(synt.allocator);
-
-    glfw.terminate();
+    synt.prefix_dir.close(synt.io);
+    synt.renderer.deinit();
 }
 
-pub fn new(appname: [*:0]const u8, allocator: std.mem.Allocator) !*Synt {
+pub fn new(appname: [*:0]const u8, allocator: std.mem.Allocator, io: std.Io) !*Synt {
     const self = try allocator.create(Synt);
 
     self.appname = appname;
     self.allocator = allocator;
-    self.keybinds = .empty;
+    self.io = io;
+
+    self.ecs = .init(allocator, self);
+    self.components = try .register(self);
+
+    try graphics.Renderer.init(
+        self,
+        .raylib,
+//        if(glfw.isVulkanSupported()) .vulkan else .opengl
+    );
+
+    try self.ecs.registerSystem(graphics.Renderer.System);
+    self.keybinds = try .init(allocator, self, Synt.engine_io.graphical.raylib_impl.vtable);
+
+    const exe_path = try std.process.executableDirPathAlloc(self.io, self.allocator);
+    defer self.allocator.free(exe_path);
+    log.debug("exe path: {s}", .{exe_path});
+
+    const exe_dir = try std.Io.Dir.openDirAbsolute(self.io, exe_path, .{});
+    defer exe_dir.close(self.io);
+    self.prefix_dir = try exe_dir.openDir(self.io, "..", .{});
+
+    // needs to be done after setting the prefix dir
+    self.textures = try .init(self.prefix_dir, self.io);
+
+    self.addTexture(&.{"synt", "test_texture"}) catch {
+        log.warn("failed registering texture synt:test_texture", .{});
+    };
 
     return self;
 }
@@ -90,32 +86,37 @@ pub fn run(synt: *Synt) !void {
     try synt.init();
     defer synt.deinit();
 
-    while (!synt.renderer.window.shouldClose()) {
-        const window_size: default.Vec2.Vec2(c_int) = .initScalar(0);
-        glfw.getWindowSize(synt.renderer.window, &window_size.x, &window_size.y);
+    while (synt.renderer.isWindowOpen()) {
+        const window_size = synt.renderer.getWindowSize();
 
-        glfw.pollEvents();
+        render: {
+            // if the window is minimized, skip processing rendering stuff
+            if(window_size.eqlScalar(0)) break :render;
 
-        // if the window is minimized, skip processing rendering stuff
-        if(window_size.eqlScalar(0)) continue;
+            synt.renderer.loopStart();
+            defer synt.renderer.loopEnd();
+        }
+
+        synt.keybinds.poll(synt);
+
+        synt.ecs.tick();
     }
 }
 
 pub fn stop(synt: *Synt) void {
-    synt.renderer.window.setShouldClose(true);
+    synt.renderer.closeWindow();
 }
 
-pub fn bindKeybind(self: *Synt, conf: input.Modifier, key: glfw.Key, function: input.keyBindFnPtr) !void {
-    const result = try self.keybinds.getOrPut(self.allocator, @intFromEnum(key));
-    
-    if(!result.found_existing) {
-        result.value_ptr.* = .empty;
-    }
-    
-    try result.value_ptr.append(self.allocator, .{
-        .function = function,
-        .modifier = conf,
-    });
+pub fn addTexture(synt: *Synt, comptime texture_path: []const []const u8) !void {
+    return synt.textures.registerTexture(
+        synt.allocator, &synt.renderer, synt.io, texture_path
+    );
+}
+
+pub fn getTexture(
+    synt: *Synt, comptime texture_path: []const []const u8
+) !graphics.Renderer.Texture {
+    return synt.textures.getTexture(texture_path);
 }
 
 // const synt = syntetica.new();
