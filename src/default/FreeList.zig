@@ -839,8 +839,12 @@ pub const Simple = struct {
 
 pub const SimpleLinked = struct {
     pub fn Unmanaged(T: type) type {
+        return UnmanagedZeroed(T, false);
+    }
+
+    pub fn UnmanagedZeroed(T: type, comptime should_zero: bool) type {
         return struct {
-            const ThisUnmanaged = @This();
+            const ThisUnmanaged = if(should_zero) UnmanagedZeroed(T, true) else UnmanagedZeroed(T, false);
             const Index = usize;
 
             pub const Link = struct {
@@ -852,10 +856,12 @@ pub const SimpleLinked = struct {
             /// bad practice to create manually, use `.iterator()`.
             pub const Iterator = struct {
                 /// actual list
-                list: *SimpleLinked.Unmanaged(T),
+                list: *ThisUnmanaged,
 
                 /// tracks the current item
                 current: usize,
+
+                /// count from the start of the iteration
                 passed: usize = 0,
 
                 /// get the current item's pointer and advance to the next item.
@@ -890,7 +896,7 @@ pub const SimpleLinked = struct {
 
             /// the list is guarantied to be usable after being set 
             /// to this state
-            pub const empty: Unmanaged(T) = .{
+            pub const empty: ThisUnmanaged = .{
                 .data = &emptyarr,
                 .links = undefined,
                 .free_index = undefined,
@@ -946,6 +952,10 @@ pub const SimpleLinked = struct {
                 if(self.data.len == 0) {
                     // initialize each list
                     self.data = try gpa.alloc(T, init_capacity);
+
+                    // memset to 0 if we need to
+                    if(should_zero) @memset(self.data, 0);
+
                     self.links = (try gpa.alloc(Link, init_capacity)).ptr;
                     self.free_index = (try gpa.alloc(Index, init_capacity)).ptr;
 
@@ -967,6 +977,9 @@ pub const SimpleLinked = struct {
                 // to other arrays and once it's resized before other arrays, the size doesn't match
                 // anymore.
                 self.data = try gpa.realloc(self.data, grow_by);
+
+                // if selected, zero the newly allocated memory
+                if(should_zero) @memset(self.data[first_index..self.data.len], 0);
 
                 // populate indices starting from the first available index.
                 self.populateFreeIndices(first_index);
@@ -1021,7 +1034,7 @@ pub const SimpleLinked = struct {
                 std.debug.print("------------ MEM DUMP -------------------------\n", .{});
                 std.debug.print("root is: {?}\n", .{self.root});
                 std.debug.print("occupied: {}\n", .{self.occupied});
-                //std.debug.print("DATA: << {any} >>\n", .{self.data});
+                std.debug.print("DATA: << {any} >>\n", .{self.data});
                 std.debug.print("LINKS: << {any} >>\n", .{self.links[0..self.data.len]});
                 std.debug.print("AVAILABLE: << {any} >>\n", .{self.free_index[0..self.data.len]});
 
@@ -1064,7 +1077,7 @@ pub const SimpleLinked = struct {
             /// reserves an index and gets a pointer to the data owned by the free list.
             /// Returns a ReserveGetPtrResult which has the index and the pointer.
             pub fn reserveGetPtr(self: *ThisUnmanaged, gpa: Allocator) !ReserveGetPtrResult {
-                const id = self.reserve(gpa);
+                const id = try self.reserve(gpa);
                 const ptr = self.getPtr(id);
 
                 return .{
@@ -1196,23 +1209,27 @@ const testing = std.testing;
 const testing_alloc_size = 20;
 
 test "SimpleLinked.Unmanaged.insert" {
-    var fl: SimpleLinked.Unmanaged(u8) = .empty;
+    var fl: SimpleLinked.UnmanagedZeroed(u8, true) = .empty;
     defer fl.deinit(testing.allocator);
 
     const i = try fl.insert(testing.allocator, 7);
     _ = try fl.insert(testing.allocator, 18);
     _ = try fl.insert(testing.allocator, 20);
+    //fl.dumpMemory();
 
-    for(0..125) |n| {
-        _ = try fl.insert(testing.allocator, @as(u8, @intCast(n)) + 2);
-    }
+    // for(0..125) |n| {
+    //     _ = try fl.insert(testing.allocator, @as(u8, @intCast(n)) + 2);
+    // }
 
-    fl.remove(25);
+    fl.remove(i);
 
     _ = try fl.insert(testing.allocator, 67);
     std.debug.print("index: {}\n", .{i});
     std.debug.print("size = {}\n", .{@sizeOf(usize)});
     std.debug.print("@sizeOf(fl) = {};\n", .{@sizeOf(SimpleLinked.Unmanaged(u8))});
+
+    const result = try fl.reserveGetPtr(testing.allocator);
+    std.debug.print("should be zero: {}\n", .{result.ptr.*});
 
     std.debug.print("VALUES: ", .{});
     var it = fl.iterator();

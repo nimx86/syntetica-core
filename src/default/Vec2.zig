@@ -81,13 +81,13 @@ pub fn Vec2(T: type) type {
             self.y -= v;
         }
 
-        pub fn eql(a: *Self, b: Self) bool {
+        pub fn eql(a: Self, b: Self) bool {
             if(a.x == b.x and a.y == b.y) return true;
             return false;
         }
 
-        pub fn eqlScalar(a: *Self, b: T) bool {
-            if(a.x == b and a.y == T) return true;
+        pub fn eqlScalar(a: Self, b: T) bool {
+            if(a.x == b and a.y == b) return true;
             return false;
         }
 
